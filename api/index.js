@@ -1,31 +1,35 @@
 const express = require("express");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
-const Database = require("better-sqlite3");
+const { Pool } = require("pg");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const db = new Database("profiles.db");
 
-// ─── DB Setup ────────────────────────────────────────────────────────────────
-db.exec(`
-  CREATE TABLE IF NOT EXISTS profiles (
-    id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
-    gender TEXT,
-    gender_probability REAL,
-    sample_size INTEGER,
-    age INTEGER,
-    age_group TEXT,
-    country_id TEXT,
-    country_probability REAL,
-    created_at TEXT NOT NULL
-  )
-`);
+const pool = new Pool({
+  connectionString: "postgresql://neondb_owner:npg_u7AdJ8NHGtvm@ep-green-dust-an1v8u2k-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+  ssl: { rejectUnauthorized: false },
+});
+
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS profiles (
+      id TEXT PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      gender TEXT,
+      gender_probability REAL,
+      sample_size INTEGER,
+      age INTEGER,
+      age_group TEXT,
+      country_id TEXT,
+      country_probability REAL,
+      created_at TEXT NOT NULL
+    )
+  `);
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function generateUUIDv7() {
-  // UUID v7: time-ordered UUID (ms timestamp in top 48 bits)
   const now = Date.now();
   const timHex = now.toString(16).padStart(12, "0");
   const rand = uuidv4().replace(/-/g, "").slice(12);
@@ -96,12 +100,12 @@ app.post("/api/profiles", async (req, res) => {
   const normalizedName = name.trim().toLowerCase();
 
   // Idempotency check
-  const existing = db.prepare("SELECT * FROM profiles WHERE name = ?").get(normalizedName);
-  if (existing) {
+  const existing = await pool.query("SELECT * FROM profiles WHERE name = $1", [normalizedName]);
+  if (existing.rows.length > 0) {
     return res.status(200).json({
       status: "success",
       message: "Profile already exists",
-      data: formatProfile(existing),
+      data: formatProfile(existing.rows[0]),
     });
   }
 
@@ -158,69 +162,70 @@ app.post("/api/profiles", async (req, res) => {
   const created_at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
   // ── Persist ──
-  db.prepare(`
-    INSERT INTO profiles
+  await pool.query(
+    `INSERT INTO profiles
       (id, name, gender, gender_probability, sample_size, age, age_group, country_id, country_probability, created_at)
-    VALUES
-      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, normalizedName, gender, gender_probability, sample_size, age, age_group, country_id, country_probability, created_at);
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [id, normalizedName, gender, gender_probability, sample_size, age, age_group, country_id, country_probability, created_at]
+  );
 
-  const profile = db.prepare("SELECT * FROM profiles WHERE id = ?").get(id);
+  const result = await pool.query("SELECT * FROM profiles WHERE id = $1", [id]);
 
-  return res.status(201).json({ status: "success", data: formatProfile(profile) });
+  return res.status(201).json({ status: "success", data: formatProfile(result.rows[0]) });
 });
 
 // ─── GET /api/profiles ────────────────────────────────────────────────────────
-app.get("/api/profiles", (req, res) => {
+app.get("/api/profiles", async (req, res) => {
   const { gender, country_id, age_group } = req.query;
 
   let query = "SELECT * FROM profiles WHERE 1=1";
   const params = [];
+  let i = 1;
 
   if (gender) {
-    query += " AND LOWER(gender) = ?";
+    query += ` AND LOWER(gender) = $${i++}`;
     params.push(gender.toLowerCase());
   }
   if (country_id) {
-    query += " AND LOWER(country_id) = ?";
+    query += ` AND LOWER(country_id) = $${i++}`;
     params.push(country_id.toLowerCase());
   }
   if (age_group) {
-    query += " AND LOWER(age_group) = ?";
+    query += ` AND LOWER(age_group) = $${i++}`;
     params.push(age_group.toLowerCase());
   }
 
-  const rows = db.prepare(query).all(...params);
+  const result = await pool.query(query, params);
 
   return res.status(200).json({
     status: "success",
-    count: rows.length,
-    data: rows.map(formatProfileList),
+    count: result.rows.length,
+    data: result.rows.map(formatProfileList),
   });
 });
 
 // ─── GET /api/profiles/:id ────────────────────────────────────────────────────
-app.get("/api/profiles/:id", (req, res) => {
+app.get("/api/profiles/:id", async (req, res) => {
   const { id } = req.params;
-  const profile = db.prepare("SELECT * FROM profiles WHERE id = ?").get(id);
+  const result = await pool.query("SELECT * FROM profiles WHERE id = $1", [id]);
 
-  if (!profile) {
+  if (result.rows.length === 0) {
     return res.status(404).json({ status: "error", message: "Profile not found" });
   }
 
-  return res.status(200).json({ status: "success", data: formatProfile(profile) });
+  return res.status(200).json({ status: "success", data: formatProfile(result.rows[0]) });
 });
 
 // ─── DELETE /api/profiles/:id ─────────────────────────────────────────────────
-app.delete("/api/profiles/:id", (req, res) => {
+app.delete("/api/profiles/:id", async (req, res) => {
   const { id } = req.params;
-  const profile = db.prepare("SELECT * FROM profiles WHERE id = ?").get(id);
+  const result = await pool.query("SELECT * FROM profiles WHERE id = $1", [id]);
 
-  if (!profile) {
+  if (result.rows.length === 0) {
     return res.status(404).json({ status: "error", message: "Profile not found" });
   }
 
-  db.prepare("DELETE FROM profiles WHERE id = ?").run(id);
+  await pool.query("DELETE FROM profiles WHERE id = $1", [id]);
   return res.sendStatus(204);
 });
 
@@ -234,5 +239,14 @@ app.use((err, req, res, next) => {
   res.status(500).json({ status: "error", message: "Internal server error" });
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// ─── Start ────────────────────────────────────────────────────────────────────
+initDB()
+  .then(() => {
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  })
+  .catch((err) => {
+    console.error("Failed to initialize DB:", err);
+    process.exit(1);
+  });
+
 module.exports = app;
