@@ -4,14 +4,17 @@ const { v4: uuidv4 } = require("uuid");
 const { Pool } = require("pg");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
+// ─── DB Setup ────────────────────────────────────────────────────────────────
 const pool = new Pool({
   connectionString: "postgresql://neondb_owner:npg_u7AdJ8NHGtvm@ep-green-dust-an1v8u2k-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
   ssl: { rejectUnauthorized: false },
 });
 
+let dbInitialized = false;
+
 async function initDB() {
+  if (dbInitialized) return;
   await pool.query(`
     CREATE TABLE IF NOT EXISTS profiles (
       id TEXT PRIMARY KEY,
@@ -26,6 +29,7 @@ async function initDB() {
       created_at TEXT NOT NULL
     )
   `);
+  dbInitialized = true;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -85,6 +89,17 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json());
+
+// ─── Init DB on every request (lazy, runs once) ───────────────────────────────
+app.use(async (req, res, next) => {
+  try {
+    await initDB();
+    next();
+  } catch (err) {
+    console.error("DB init failed:", err);
+    res.status(500).json({ status: "error", message: "Database initialization failed" });
+  }
+});
 
 // ─── POST /api/profiles ───────────────────────────────────────────────────────
 app.post("/api/profiles", async (req, res) => {
@@ -239,14 +254,5 @@ app.use((err, req, res, next) => {
   res.status(500).json({ status: "error", message: "Internal server error" });
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
-initDB()
-  .then(() => {
-    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-  })
-  .catch((err) => {
-    console.error("Failed to initialize DB:", err);
-    process.exit(1);
-  });
-
+// ─── Export for Vercel (no app.listen) ───────────────────────────────────────
 module.exports = app;
