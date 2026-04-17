@@ -1,6 +1,4 @@
 ```markdown
-# LodgePay Express Server - Local Development
-
 ## Prerequisites
 - Node.js (v18 or higher)
 - npm or yarn
@@ -18,13 +16,6 @@ cd <project-folder>
 npm install
 ```
 
-3. **Set up environment variables**
-Create a `.env` file in the root directory:
-```env
-PORT=3000
-CONVEX_URL=https://your-convex-url.convex.cloud
-PAYSTACK_SECRET_KEY=sk_live_xxxxxxxx
-```
 
 ## Running Locally
 
